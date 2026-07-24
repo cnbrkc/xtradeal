@@ -1,6 +1,6 @@
 """
-DonanimHaber forum scraper (Playwright ile).
-Güvenlik duvarını aşmak için gerçek Chrome tarayıcısı kullanır.
+DonanimHaber forum scraper (Playwright Stealth ile).
+Güvenlik duvarını aşmak için gerçek Chrome tarayıcısı gibi davranır.
 """
 import re
 import time
@@ -27,24 +27,36 @@ class DonanimHaberScraper:
 
     def _fetch_page_html(self, url: str) -> Optional[str]:
         with sync_playwright() as p:
-            # Headless Chrome başlat (Arka planda çalışır)
+            # Headless Chrome başlat
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent=self.user_agent)
+            
+            # Cloudflare bot korumasını aşmak için webdriver bayrağını kaldır
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['tr-TR', 'tr', 'en']});
+            """)
+            
             page = context.new_page()
             
             try:
-                # Sayfaya git
+                # Sayfaya git, ağ trafiği bitene kadar bekle
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
-                # Cloudflare veya güvenlik duvarı beklemesi (10 saniye bekle, insana benzer)
+                # Cloudflare 5 saniye bekletme ekranını aşmak için 8 saniye bekle
+                page.wait_for_timeout(8000)
+                
+                # Debug: Sayfa başlığını yazdır (Cloudflare'de miyiz yoksa konudamıyız anlayacağız)
+                title = page.title()
+                print(f"[SCRAPER] Açılan Sayfa Başlığı: {title}")
+
+                # Post elementinin yüklenmesini bekle
                 try:
-                    # Post elementinin yüklenmesini bekle
-                    page.wait_for_selector("article[id^='elComment_'], div[data-postid]", timeout=15000)
+                    page.wait_for_selector("article[id^='elComment_'], div[data-postid]", timeout=10000)
                 except PlaywrightTimeoutError:
                     pass
-                
-                # Sayfanın tam yüklenmesi için ekstra bekle
-                page.wait_for_timeout(2000)
                 
                 # HTML içeriğini al
                 html = page.content()
