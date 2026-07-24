@@ -25,7 +25,7 @@ jobs:
       - name: Playwright Tarayıcılarını (Chrome) Kur
         run: python -m playwright install chromium --with-deps
 
-      - name: Tarama çalıştır
+      - name: Tarama çalıştır (Sanal Ekran ile)
         env:
           FORUM_URL: ${{ secrets.FORUM_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -34,7 +34,8 @@ jobs:
           DB_PATH: "data/deals.db"
           REQUEST_DELAY: "2.0"
           MIN_CONFIDENCE: "0.3"
-        run: python main.py
+        # xvfb-run komutu sanal ekran oluşturur, böylece Cloudflare kandırmacası yaparız
+        run: xvfb-run python main.py
 
       - name: Veritabanını commit'le
         run: |
