@@ -1,0 +1,43 @@
+name: Forum Tarama
+
+on:
+  schedule:
+    # Her 2 saatte bir (UTC) — Türkiye saatiyle her çift saatte
+    - cron: "0 */2 * * *"
+  workflow_dispatch: # GitHub'tan manuel tetikleme
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bağımlılıkları yükle
+        run: pip install -r requirements.txt
+
+      - name: Tarama çalıştır
+        env:
+          FORUM_URL: ${{ secrets.FORUM_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCAN_PAGES: "5"
+          DB_PATH: "data/deals.db"
+          REQUEST_DELAY: "2.0"
+          MIN_CONFIDENCE: "0.3"
+        run: python main.py
+
+      - name: Veritabanını commit'le (state persistence)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/deals.db
+          git diff --staged --quiet || git commit -m "chore: tarama veritabanı güncellendi [skip ci]"
+          git push
