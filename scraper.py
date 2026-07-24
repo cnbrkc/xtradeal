@@ -27,11 +27,11 @@ class DonanimHaberScraper:
 
     def _fetch_page_html(self, url: str) -> Optional[str]:
         with sync_playwright() as p:
-            # Headless Chrome başlat
-            browser = p.chromium.launch(headless=True)
+            # Headless=False yaptık! Sanal ekran (xvfb) sayesinde normal tarayıcı gibi açılacak.
+            browser = p.chromium.launch(headless=False)
             context = browser.new_context(user_agent=self.user_agent)
             
-            # Cloudflare bot korumasını aşmak için webdriver bayrağını kaldır
+            # Cloudflare bot korumasını aşmak için tarayıcı kimliğimizi gizleyelim
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 window.chrome = { runtime: {} };
@@ -42,19 +42,19 @@ class DonanimHaberScraper:
             page = context.new_page()
             
             try:
-                # Sayfaya git, ağ trafiği bitene kadar bekle
+                # Sayfaya git
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 
-                # Cloudflare 5 saniye bekletme ekranını aşmak için 8 saniye bekle
-                page.wait_for_timeout(8000)
+                # Cloudflare 5 saniye bekletme ekranını aşmak için 10 saniye bekle
+                page.wait_for_timeout(10000)
                 
-                # Debug: Sayfa başlığını yazdır (Cloudflare'de miyiz yoksa konudamıyız anlayacağız)
+                # Debug: Sayfa başlığını yazdır
                 title = page.title()
                 print(f"[SCRAPER] Açılan Sayfa Başlığı: {title}")
 
                 # Post elementinin yüklenmesini bekle
                 try:
-                    page.wait_for_selector("article[id^='elComment_'], div[data-postid]", timeout=10000)
+                    page.wait_for_selector("article[id^='elComment_'], div[data-postid]", timeout=15000)
                 except PlaywrightTimeoutError:
                     pass
                 
