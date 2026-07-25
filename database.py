@@ -1,118 +1,116 @@
+"""
+SQLite veritabanı yönetimi.
+Teklifleri saklar, duplicate (aynı post) kontrolü yapar.
+"""
+
 import sqlite3
 import os
-from typing import List, Optional
-from datetime import datetime
+from typing import List
 
 
 class Database:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        d = os.path.dirname(db_path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        self._init_db()
 
-    def _conn(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def __init__(self, db_path: str = "data/deals.db"):
+        # data/ klasörü yoksa oluştur
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    def _init_db(self):
-        with self._conn() as c:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS deals (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    post_id     TEXT UNIQUE,
-                    author      TEXT,
-                    timestamp   TEXT,
-                    content     TEXT,
-                    url         TEXT,
-                    car_brand   TEXT,
-                    car_model   TEXT,
-                    price       INTEGER,
-                    price_text  TEXT,
-                    dealer      TEXT,
-                    year        TEXT,
-                    confidence  REAL,
-                    scanned_at  TEXT
-                )
-            """)
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS sent_posts (
-                    post_id  TEXT UNIQUE,
-                    sent_at  TEXT
-                )
-            """)
-            c.execute("""
-                CREATE INDEX IF NOT EXISTS idx_deals_confidence
-                ON deals(confidence DESC)
-            """)
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self._create_table()
 
-    # ------------------------------------------------------------------ #
-    def is_sent(self, post_id: str) -> bool:
-        with self._conn() as c:
-            r = c.execute("SELECT 1 FROM sent_posts WHERE post_id=?", (post_id,))
-            return r.fetchone() is not None
-
-    def mark_sent(self, post_id: str):
-        with self._conn() as c:
-            c.execute(
-                "INSERT OR IGNORE INTO sent_posts VALUES (?, ?)",
-                (post_id, datetime.now().isoformat()),
+    def _create_table(self):
+        """Tablo yoksa oluştur."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS deals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id     TEXT    UNIQUE NOT NULL,
+                author      TEXT    DEFAULT '',
+                timestamp   TEXT    DEFAULT '',
+                brand       TEXT    DEFAULT '',
+                model       TEXT    DEFAULT '',
+                year        TEXT    DEFAULT '',
+                price       TEXT    DEFAULT '',
+                confidence  REAL    DEFAULT 0.0,
+                content     TEXT    DEFAULT '',
+                url         TEXT    DEFAULT '',
+                page        INTEGER DEFAULT 0,
+                created_at  TEXT    DEFAULT (datetime('now', 'localtime'))
             )
+        """)
+        self.conn.commit()
 
-    def save_deal(self, deal) -> bool:
-        """True = yeni kayıt, False = zaten var."""
-        with self._conn() as c:
+    # ──────────────────────────────────────────────
+    #  Teklifleri kaydet (duplicate olanları atla)
+    # ──────────────────────────────────────────────
+    def save_deals(self, deals) -> list:
+        """
+        Yeni teklifleri kaydet.
+        post_id zaten varsa → duplicate → sessizce atla.
+        Sadece YENİ eklenenleri döndür.
+        """
+        new_deals = []
+        skipped = 0
+
+        for deal in deals:
             try:
-                c.execute(
+                self.conn.execute(
                     """INSERT INTO deals
-                       (post_id, author, timestamp, content, url,
-                        car_brand, car_model, price, price_text,
-                        dealer, year, confidence, scanned_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (post_id, author, timestamp, brand, model, year,
+                        price, confidence, content, url, page)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        deal.post_id, deal.author, deal.timestamp,
-                        deal.content, deal.url, deal.car_brand,
-                        deal.car_model, deal.price, deal.price_text,
-                        deal.dealer, deal.year, deal.confidence,
-                        datetime.now().isoformat(),
-                    ),
+                        deal.post_id,
+                        deal.author,
+                        deal.timestamp,
+                        deal.brand,
+                        deal.model,
+                        deal.year,
+                        deal.price,
+                        deal.confidence,
+                        deal.content,
+                        deal.url,
+                        deal.page,
+                    )
                 )
-                return True
+                new_deals.append(deal)
             except sqlite3.IntegrityError:
-                return False
+                # post_id zaten var → duplicate, atla
+                skipped += 1
 
-    def get_all_deals(self, limit: int = 200, min_confidence: float = 0.0,
-                      brand: Optional[str] = None) -> List[dict]:
-        q = "SELECT * FROM deals WHERE confidence >= ?"
-        params: list = [min_confidence]
-        if brand:
-            q += " AND car_brand LIKE ?"
-            params.append(f"%{brand}%")
-        q += " ORDER BY scanned_at DESC LIMIT ?"
-        params.append(limit)
-        with self._conn() as c:
-            return [dict(r) for r in c.execute(q, params).fetchall()]
+        self.conn.commit()
 
-    def get_unsent_deals(self, min_confidence: float = 0.3) -> List[dict]:
-        with self._conn() as c:
-            return [
-                dict(r)
-                for r in c.execute(
-                    """SELECT * FROM deals
-                       WHERE confidence >= ?
-                         AND post_id NOT IN (SELECT post_id FROM sent_posts)
-                       ORDER BY confidence DESC""",
-                    (min_confidence,),
-                ).fetchall()
-            ]
+        if skipped > 0:
+            print(f"      [DB] {skipped} duplicate atlandı.")
 
-    def get_stats(self) -> dict:
-        with self._conn() as c:
-            total = c.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
-            high = c.execute(
-                "SELECT COUNT(*) FROM deals WHERE confidence >= 0.5"
-            ).fetchone()[0]
-            sent = c.execute("SELECT COUNT(*) FROM sent_posts").fetchone()[0]
-            return {"total": total, "high_confidence": high, "sent": sent}
+        return new_deals
+
+    # ──────────────────────────────────────────────
+    #  Tüm teklifleri getir
+    # ──────────────────────────────────────────────
+    def get_all_deals(self) -> list:
+        cursor = self.conn.execute(
+            "SELECT * FROM deals ORDER BY created_at DESC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ──────────────────────────────────────────────
+    #  Toplam kayıt sayısı
+    # ──────────────────────────────────────────────
+    def get_deal_count(self) -> int:
+        cursor = self.conn.execute("SELECT COUNT(*) FROM deals")
+        return cursor.fetchone()[0]
+
+    # ──────────────────────────────────────────────
+    #  Belirli bir post_id var mı?
+    # ──────────────────────────────────────────────
+    def exists(self, post_id: str) -> bool:
+        cursor = self.conn.execute(
+            "SELECT 1 FROM deals WHERE post_id = ?", (post_id,)
+        )
+        return cursor.fetchone() is not None
+
+    # ──────────────────────────────────────────────
+    #  Kapat
+    # ──────────────────────────────────────────────
+    def close(self):
+        self.conn.close()
