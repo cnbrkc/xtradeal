@@ -1,5 +1,5 @@
 """
-Ana giriş noktası — State destekli, tersten tarama, sıkı filtreleme.
+Ana giriş noktası — Kaldığı yerden ileriye tarama.
 """
 
 import sys
@@ -23,8 +23,13 @@ def run_scan(config: Config, send_telegram: bool = True,
     # ── State yükle ──
     state_mgr = StateManager()
     state = state_mgr.load()
-    print(f"\n[STATE] Son tarama: sayfa {state.last_page}, "
-          f"toplam {state.scan_count} tarama yapılmış")
+
+    if state.last_page > 0:
+        print(f"\n[STATE] Kaldığım yer: sayfa {state.last_page}, "
+              f"son post: {state.last_post_id}, "
+              f"şimdiye kadar {state.scan_count} tarama yapılmış.")
+    else:
+        print(f"\n[STATE] İlk çalışma, son sayfadan başlayacağım.")
 
     # ── Bileşenleri başlat ──
     scraper = DonanimHaberScraper(
@@ -36,17 +41,21 @@ def run_scan(config: Config, send_telegram: bool = True,
     )
     db = Database(config.DB_PATH)
 
-    # ── 1) Forumu tara (SON SAYFADAN GERİYE) ──
-    print(f"\n[1/4] Forum taranıyor (son {config.SCAN_PAGES} sayfa)...")
-    posts, last_page, total_pages = scraper.scrape_latest(
+    # ── 1) Forumu tara (KALDIĞI YERDEN İLERİYE) ──
+    print(f"\n[1/4] Forum taranıyor...")
+    posts, new_last_page, total_pages, last_post_id = scraper.scrape_latest(
         num_pages=config.SCAN_PAGES,
-        start_page=state.last_page,
+        last_page=state.last_page,
     )
     print(f"      → {len(posts)} post bulundu.")
 
     if not posts:
         print("      ⚠️ Post bulunamadı!")
-        state_mgr.update(last_page=last_page, total_pages=total_pages)
+        state_mgr.update(
+            last_page=new_last_page or state.last_page,
+            last_post_id=state.last_post_id,
+            total_pages=total_pages,
+        )
         return {"total_posts": 0, "potential_deals": 0,
                 "new_deals": 0, "sent": 0}
 
@@ -55,7 +64,6 @@ def run_scan(config: Config, send_telegram: bool = True,
     deals = []
     for post in posts:
         deal = extract_deal(post)
-        # ✅ Sadece confidence >= MIN_CONFIDENCE olanları al
         if deal.confidence >= config.MIN_CONFIDENCE:
             deals.append(deal)
         elif debug:
@@ -98,13 +106,14 @@ def run_scan(config: Config, send_telegram: bool = True,
         print(f"\n[4/4] Telegram atlandı.")
 
     # ── State'i kaydet ──
-    last_post_id = posts[0].post_id if posts else ""
     state_mgr.update(
-        last_page=last_page,
+        last_page=new_last_page,
         last_post_id=last_post_id,
         total_pages=total_pages,
     )
-    print(f"\n[STATE] Kaydedildi → sayfa: {last_page}, post: {last_post_id}")
+    print(f"\n[STATE] ✅ Kaydedildi → "
+          f"son sayfa: {new_last_page}/{total_pages}, "
+          f"son post: {last_post_id}")
 
     # ── Özet ──
     result = {
@@ -112,8 +121,9 @@ def run_scan(config: Config, send_telegram: bool = True,
         "potential_deals": len(deals),
         "new_deals": new_count,
         "sent": sent_count,
-        "last_page": last_page,
+        "last_page": new_last_page,
         "total_pages": total_pages,
+        "last_post_id": last_post_id,
     }
     print(f"\n{'=' * 60}")
     print(f"  TAMAMLANDI: {json.dumps(result, ensure_ascii=False)}")
