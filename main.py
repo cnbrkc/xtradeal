@@ -1,5 +1,5 @@
 """
-Ana giriş noktası — State destekli, tersten tarama.
+Ana giriş noktası — State destekli, tersten tarama, sıkı filtreleme.
 """
 
 import sys
@@ -40,7 +40,7 @@ def run_scan(config: Config, send_telegram: bool = True,
     print(f"\n[1/4] Forum taranıyor (son {config.SCAN_PAGES} sayfa)...")
     posts, last_page, total_pages = scraper.scrape_latest(
         num_pages=config.SCAN_PAGES,
-        start_page=state.last_page,  # 0 ise en sondan başlar
+        start_page=state.last_page,
     )
     print(f"      → {len(posts)} post bulundu.")
 
@@ -50,14 +50,20 @@ def run_scan(config: Config, send_telegram: bool = True,
         return {"total_posts": 0, "potential_deals": 0,
                 "new_deals": 0, "sent": 0}
 
-    # ── 2) Araç bilgisi çıkar ──
+    # ── 2) Araç bilgisi çıkar (SIKI FİLTRE) ──
     print(f"\n[2/4] Araç bilgileri çıkarılıyor...")
     deals = []
     for post in posts:
         deal = extract_deal(post)
-        if deal.car_brand or deal.price:
+        # ✅ Sadece confidence >= MIN_CONFIDENCE olanları al
+        if deal.confidence >= config.MIN_CONFIDENCE:
             deals.append(deal)
-    print(f"      → {len(deals)} potansiyel teklif bulundu.")
+        elif debug:
+            print(f"      [ELENEN] conf={deal.confidence} "
+                  f"brand={deal.car_brand} price={deal.price} "
+                  f"→ {post.content[:80]}...")
+    print(f"      → {len(deals)} teklif bulundu "
+          f"({len(posts) - len(deals)} gürültü elendi).")
 
     # ── 3) Veritabanına kaydet ──
     print(f"\n[3/4] Veritabanına kaydediliyor...")
@@ -65,7 +71,7 @@ def run_scan(config: Config, send_telegram: bool = True,
     for deal in deals:
         if db.save_deal(deal):
             new_count += 1
-    print(f"      → {new_count} yeni kayıt eklendi "
+    print(f"      → {new_count} yeni kayıt "
           f"({len(deals) - new_count} duplicate atlandı).")
 
     # ── 4) Telegram'a gönder ──
@@ -98,8 +104,7 @@ def run_scan(config: Config, send_telegram: bool = True,
         last_post_id=last_post_id,
         total_pages=total_pages,
     )
-    print(f"\n[STATE] Kaydedildi → sayfa: {last_page}, "
-          f"post: {last_post_id}")
+    print(f"\n[STATE] Kaydedildi → sayfa: {last_page}, post: {last_post_id}")
 
     # ── Özet ──
     result = {
