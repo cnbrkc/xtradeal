@@ -1,9 +1,5 @@
 """
 Ana giriş noktası — GitHub Actions ve CLI için.
-Kullanım:
-    python main.py              # Tarama + Telegram
-    python main.py --no-telegram  # Sadece tarama (Telegram'a gönderme)
-    python main.py --debug      # Debug modu (ham post'ları yazdır)
 """
 import sys
 import json
@@ -25,6 +21,8 @@ def run_scan(config: Config, send_telegram: bool = True, debug: bool = False) ->
         base_url=config.FORUM_URL,
         user_agent=config.USER_AGENT,
         delay=config.REQUEST_DELAY,
+        dh_username=config.DH_USERNAME,
+        dh_password=config.DH_PASSWORD
     )
     db = Database(config.DB_PATH)
 
@@ -33,18 +31,11 @@ def run_scan(config: Config, send_telegram: bool = True, debug: bool = False) ->
     posts = scraper.scrape(num_pages=config.SCAN_PAGES)
     print(f"      → {len(posts)} post bulundu.")
 
-    if debug:
-        for p in posts[:5]:
-            print(f"\n--- POST {p.post_id} (sayfa {p.page}) ---")
-            print(f"Author: {p.author}")
-            print(f"Content: {p.content[:200]}")
-
     # 2) Araç bilgisi çıkar
     print("\n[2/4] Araç bilgileri çıkarılıyor...")
     deals = []
     for post in posts:
         deal = extract_deal(post)
-        # En az marka veya fiyat varsa kaydet
         if deal.car_brand or deal.price:
             deals.append(deal)
     print(f"      → {len(deals)} potansiyel teklif bulundu.")
@@ -71,12 +62,10 @@ def run_scan(config: Config, send_telegram: bool = True, debug: bool = False) ->
                 db.mark_sent(deal_dict["post_id"])
                 sent_count += 1
 
-        notifier.send_summary(
-            total=len(posts), new=new_count, sent=sent_count
-        )
+        notifier.send_summary(total=len(posts), new=new_count, sent=sent_count)
         print(f"      → {sent_count} mesaj gönderildi.")
     else:
-        print("\n[4/4] Telegram atlandı (token/chat_id yok veya --no-telegram).")
+        print("\n[4/4] Telegram atlandı.")
 
     result = {
         "total_posts": len(posts),
@@ -84,17 +73,14 @@ def run_scan(config: Config, send_telegram: bool = True, debug: bool = False) ->
         "new_deals": new_count,
         "sent": sent_count,
     }
-
     print("\n" + "=" * 60)
     print(f"  TAMAMLANDI: {json.dumps(result, ensure_ascii=False)}")
     print("=" * 60)
-
     return result
 
 
 if __name__ == "__main__":
     config = Config()
-
     send_tg = "--no-telegram" not in sys.argv
     debug = "--debug" in sys.argv
 
