@@ -6,15 +6,14 @@ Her çalışmada kaldığı yerden devam eder.
 import json
 import os
 from dataclasses import dataclass, asdict
-from typing import Optional
 
 
 @dataclass
 class ScanState:
-    last_page: int = 0          # En son taranan sayfa numarası
-    last_post_id: str = ""      # En son görülen post ID
-    total_pages: int = 0        # Konunun toplam sayfa sayısı
-    scan_count: int = 0         # Kaç kez tarama yapıldı
+    last_page: int = 0
+    last_post_id: str = ""
+    total_pages: int = 0
+    scan_count: int = 0
 
 
 STATE_FILE = "data/scan_state.json"
