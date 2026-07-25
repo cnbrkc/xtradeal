@@ -46,3 +46,12 @@ jobs:
         with:
           path: data/scan_state.json
           key: dh-scan-state-${{ github.run_id }}
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "chore: tarama veritabanı güncellendi [skip ci]"
+          git push
+
+  
