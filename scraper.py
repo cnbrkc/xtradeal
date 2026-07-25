@@ -1,5 +1,6 @@
 """
-DonanimHaber forum scraper (Playwright ile giriş yapar).
+DonanimHaber forum scraper (Playwright ile).
+Güvenlik duvarını aşmak için gerçek Chrome tarayıcısı gibi davranır.
 """
 import re
 import time
@@ -19,45 +20,18 @@ class ForumPost:
     page: int
 
 class DonanimHaberScraper:
-    def __init__(self, base_url: str, user_agent: str, delay: float = 2.0, dh_username: str = "", dh_password: str = ""):
+    def __init__(self, base_url: str, user_agent: str, delay: float = 2.0, **kwargs):
         self.base_url = base_url
         self.user_agent = user_agent
         self.delay = delay
-        self.dh_username = dh_username
-        self.dh_password = dh_password
-
-    def _login(self, page):
-        if not self.dh_username or not self.dh_password:
-            print("[SCRAPER] DH kullanıcı adı/şifre bulunamadı, giriş yapılamadı!")
-            return False
-            
-        print("[SCRAPER] Forum'a giriş yapılıyor...")
-        try:
-            # Giriş sayfasına git
-            page.goto("https://forum.donanimhaber.com/login/", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000) # Cloudflare geçerse diye bekle
-            
-            # Kullanıcı adı ve şifreyi doldur
-            page.fill("input[name='auth']", self.dh_username)
-            page.fill("input[name='password']", self.dh_password)
-            
-            # "Bağlan" butonuna tıkla
-            page.click("#elSignInSubmit")
-            
-            # Girişin tamamlanması için bekle
-            page.wait_for_timeout(5000)
-            print("[SCRAPER] Giriş işlemi tamamlandı.")
-            return True
-        except Exception as e:
-            print(f"[SCRAPER] Giriş hatası: {e}")
-            return False
 
     def _fetch_page_html(self, url: str) -> Optional[str]:
         with sync_playwright() as p:
+            # Headless=False yaptık! Sanal ekran (xvfb) sayesinde normal tarayıcı gibi açılacak.
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(user_agent=self.user_agent)
             
-            # Cloudflare kandırmacası
+            # Cloudflare bot korumasını aşmak için tarayıcı kimliğimizi gizleyelim
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 window.chrome = { runtime: {} };
@@ -70,15 +44,11 @@ class DonanimHaberScraper:
             try:
                 # Sayfaya git
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                page.wait_for_timeout(5000)
                 
-                # Eğer sayfada "Üye Girişi" yazıyorsa, giriş yapmamız lazım
-                if "Üye Girişi" in page.title() or "Bağlan" in page.content():
-                    self._login(page)
-                    # Giriş yaptıktan sonra asıl konuya tekrar dön
-                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(5000)
+                # Cloudflare 5 saniye bekletme ekranını aşmak için 10 saniye bekle
+                page.wait_for_timeout(10000)
                 
+                # Debug: Sayfa başlığını yazdır
                 title = page.title()
                 print(f"[SCRAPER] Açılan Sayfa Başlığı: {title}")
 
@@ -88,6 +58,7 @@ class DonanimHaberScraper:
                 except PlaywrightTimeoutError:
                     pass
                 
+                # HTML içeriğini al
                 html = page.content()
                 return html
             except Exception as e:
@@ -131,7 +102,9 @@ class DonanimHaberScraper:
             articles = soup.find_all("div", class_=re.compile(r"cPost|ipsComment"))
 
         if not articles:
-            print(f"[SCRAPER] Sayfa {page}: post bulunamadı! Giriş başarısız olabilir.")
+            print(f"[SCRAPER] Sayfa {page}: post bulunamadı!")
+            # DEBUG: Eğer post bulunamazsa, sayfada ne var ekrana yazdırıyoruz ki anlayalım
+            print(f"[SCRAPER] Sayfa İçeriği (İlk 500 karakter): \n{soup.get_text()[:500]}")
             return posts
 
         for article in articles:
