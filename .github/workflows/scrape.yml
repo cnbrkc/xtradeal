@@ -1,0 +1,48 @@
+name: Scrape DH Forum
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # Her 30 dakikada bir
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      # ✅ State'i cache'den geri yükle
+      - name: Restore scan state
+        uses: actions/cache@v4
+        with:
+          path: data/scan_state.json
+          key: dh-scan-state-${{ github.run_id }}
+          restore-keys: |
+            dh-scan-state-
+
+      - name: Run scraper
+        env:
+          FORUM_URL: ${{ secrets.FORUM_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DH_USERNAME: ${{ secrets.DH_USERNAME }}
+          DH_PASSWORD: ${{ secrets.DH_PASSWORD }}
+          SCAN_PAGES: "5"
+        run: xvfb-run python main.py
+
+      # ✅ State'i cache'e kaydet
+      - name: Save scan state
+        uses: actions/cache@v4
+        with:
+          path: data/scan_state.json
+          key: dh-scan-state-${{ github.run_id }}
