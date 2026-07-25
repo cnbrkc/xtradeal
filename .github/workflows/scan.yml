@@ -38,6 +38,16 @@ jobs:
           MIN_CONFIDENCE: "0.3"
         run: xvfb-run python main.py
 
+      - name: Hata Ekran Görüntülerini Yükle
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: hata-ekran-goruntuleri
+          path: |
+            debug.png
+            login_error.png
+          if-no-files-found: ignore
+
       - name: Veritabanını commit'le
         run: |
           git config user.name "github-actions[bot]"
