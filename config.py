@@ -17,6 +17,11 @@ class Config:
     DB_PATH: str = os.getenv("DB_PATH", "data/deals.db")
     REQUEST_DELAY: float = float(os.getenv("REQUEST_DELAY", "2.0"))
     MIN_CONFIDENCE: float = float(os.getenv("MIN_CONFIDENCE", "0.3"))
+    
+    # DH Giriş Bilgileri
+    DH_USERNAME: str = os.getenv("DH_USERNAME", "")
+    DH_PASSWORD: str = os.getenv("DH_PASSWORD", "")
+    
     USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
