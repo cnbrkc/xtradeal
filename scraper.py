@@ -1,6 +1,6 @@
 """
 DonanimHaber forum scraper (Playwright ile).
-Güvenlik duvarını aşmak için gerçek Chrome tarayıcısı gibi davranır.
+Güvenlik duvarını aşar ve üye girişi yapar.
 """
 import re
 import time
@@ -37,22 +37,34 @@ class DonanimHaberScraper:
             page.goto("https://forum.donanimhaber.com/login/", timeout=60000, wait_until="domcontentloaded")
             page.wait_for_timeout(8000) # Cloudflare geçerse diye bekle
             
-            # Eğer hala cloudflare ekranındaysak bekle
-            for _ in range(3):
-                if "Bir anlık kontrol" in page.title() or "Just a moment" in page.title():
-                    print("[SCRAPER] Cloudflare bekleniyor (Giriş Sayfası)...")
-                    page.wait_for_timeout(5000)
-                else:
-                    break
+            # Şifre kutusunu bul (En garantisi input[type='password']")
+            print("[SCRAPER] Giriş kutucukları aranıyor...")
+            page.wait_for_selector("input[type='password']", timeout=15000)
             
-            print(f"[SCRAPER] Giriş sayfası başlığı: {page.title()}")
+            # Şifreyi doldur
+            page.locator("input[type='password']").first.fill(self.dh_password)
             
-            # Kullanıcı adı ve şifreyi doldur
-            page.fill("input[name='auth']", self.dh_username)
-            page.fill("input[name='password']", self.dh_password)
+            # Kullanıcı adını doldur (Şifre kutusundan önceki metin kutusu)
+            username_selectors = ["input[name='auth']", "input[name='username']", "input[type='email']", "input[type='text']"]
+            for sel in username_selectors:
+                try:
+                    if page.locator(sel).first.is_visible():
+                        page.locator(sel).first.fill(self.dh_username)
+                        print(f"[SCRAPER] Kullanıcı adı '{sel}' kutusuna yazıldı.")
+                        break
+                except:
+                    continue
             
-            # "Bağlan" butonuna tıkla
-            page.click("#elSignInSubmit")
+            # "Giriş Yap" butonuna tıkla (Tipi submit olan veya id'si elSignInSubmit olan)
+            print("[SCRAPER] Giriş yap butonuna tıklanıyor...")
+            submit_selectors = ["#elSignInSubmit", "button[type='submit']", "input[type='submit']"]
+            for sel in submit_selectors:
+                try:
+                    if page.locator(sel).first.is_visible():
+                        page.locator(sel).first.click()
+                        break
+                except:
+                    continue
             
             # Girişin tamamlanması için bekle
             page.wait_for_timeout(8000)
@@ -60,7 +72,6 @@ class DonanimHaberScraper:
             return True
         except Exception as e:
             print(f"[SCRAPER] Giriş hatası: {e}")
-            # Hata ekran görüntüsü al
             try:
                 page.screenshot(path="login_error.png", full_page=True)
                 print("[SCRAPER] Giriş hata ekran görüntüsü 'login_error.png' olarak kaydedildi.")
@@ -228,13 +239,4 @@ class DonanimHaberScraper:
 
         all_posts.extend(self._parse_posts(html, 1))
 
-        for page in range(2, pages_to_scan + 1):
-            time.sleep(self.delay)
-            url = self._get_page_url(page)
-            print(f"[SCRAPER] Sayfa {page} yükleniyor: {url}")
-            html = self._fetch_page_html(url, page_num=page)
-            if html:
-                all_posts.extend(self._parse_posts(html, page))
-
-        print(f"[SCRAPER] Toplam {len(all_posts)} post bulundu.")
-        return all_posts
+        for page in range(2, pages_to_scan
