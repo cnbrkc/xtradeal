@@ -1,5 +1,5 @@
 """
-DonanimHaber forum scraper (Playwright ile) — DÜZELTILMIŞ VERSİYON
+DonanimHaber forum scraper (Playwright ile) — DH'ye özel düzeltilmiş versiyon.
 """
 
 import re
@@ -24,27 +24,38 @@ class DonanimHaberScraper:
 
     def __init__(self, base_url: str, user_agent: str, delay: float = 2.0,
                  dh_username: str = "", dh_password: str = ""):
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
         self.user_agent = user_agent
         self.delay = delay
         self.dh_username = dh_username
         self.dh_password = dh_password
-        # Tek browser instance tutacağız
+        # Tek browser instance
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
 
     # ──────────────────────────────────────────────
-    #  Browser yönetimi (tek instance)
+    #  Browser yönetimi — TEK instance
     # ──────────────────────────────────────────────
     def _start_browser(self):
-        """Tek bir browser instance başlat."""
         if self._browser is not None:
             return
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=False)
-        self._context = self._browser.new_context(user_agent=self.user_agent)
+        self._browser = self._playwright.chromium.launch(
+            headless=True,  # ✅ GitHub Actions için headless
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
+        )
+        self._context = self._browser.new_context(
+            user_agent=self.user_agent,
+            viewport={"width": 1920, "height": 1080},
+            locale="tr-TR",
+        )
         self._context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             window.chrome = { runtime: {} };
@@ -54,13 +65,21 @@ class DonanimHaberScraper:
                 {get: () => ['tr-TR', 'tr', 'en']});
         """)
         self._page = self._context.new_page()
+        print("[SCRAPER] Browser başlatıldı (headless).")
 
     def _close_browser(self):
         if self._browser:
-            self._browser.close()
-            self._playwright.stop()
+            try:
+                self._browser.close()
+            except:
+                pass
+            try:
+                self._playwright.stop()
+            except:
+                pass
             self._browser = None
             self._page = None
+            print("[SCRAPER] Browser kapatıldı.")
 
     # ──────────────────────────────────────────────
     #  Login
@@ -72,10 +91,9 @@ class DonanimHaberScraper:
         print("[SCRAPER] Forum'a giriş yapılıyor...")
         try:
             page.goto("https://forum.donanimhaber.com/login/",
-                       timeout=60000, wait_until="networkidle")
-            page.wait_for_timeout(5000)
+                       timeout=60000, wait_until="domcontentloaded")
+            page.wait_for_timeout(8000)
 
-            # DH login formu
             page.wait_for_selector("input[type='password']", timeout=15000)
             page.locator("input[type='password']").first.fill(self.dh_password)
 
@@ -97,7 +115,7 @@ class DonanimHaberScraper:
                 except:
                     continue
 
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(8000)
             print("[SCRAPER] Giriş tamamlandı.")
             return True
         except Exception as e:
@@ -112,24 +130,52 @@ class DonanimHaberScraper:
         page = self._page
 
         try:
-            page.goto(url, timeout=60000, wait_until="networkidle")
-            page.wait_for_timeout(5000)
+            # ✅ domcontentloaded kullan, networkidle KULLANMA
+            # (DH sürekli arka plan isteği atıyor, networkidle hiç tetiklenmez)
+            page.goto(url, timeout=60000, wait_until="domcontentloaded")
 
-            # Login gerekiyorsa (sadece ilk sayfada kontrol et)
+            # ✅ Sayfanın render olması için explicit bekleme
+            page.wait_for_timeout(10000)
+
+            # Login gerekiyorsa (sadece ilk sayfada)
             if (page_num == 1 and self.dh_username
                     and page.query_selector("input[type='password']")):
                 print("[SCRAPER] Giriş ekranı tespit edildi.")
                 if self._login(page):
-                    page.goto(url, timeout=60000, wait_until="networkidle")
-                    page.wait_for_timeout(5000)
+                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(10000)
+
+            # ✅ DH'nin gerçek mesaj container'ını bekle
+            try:
+                page.wait_for_selector(
+                    "article.kl-icerik-satir, div.ki-cevapicerigi, span.msg",
+                    timeout=20000
+                )
+                print("[SCRAPER] Mesaj kutucukları bulundu!")
+            except PlaywrightTimeoutError:
+                print("[SCRAPER] ⚠️ Mesaj kutucukları beklenirken zaman aşımı.")
+                print("[SCRAPER] Sayfa başlığı:", page.title())
 
             html = page.content()
 
-            # ── DEBUG: İlk 500 karakteri yazdır ──
+            # ── DEBUG: İlk sayfada yapıyı log'a yazdır ──
             if page_num == 1:
                 soup_dbg = BeautifulSoup(html, "lxml")
                 txt = soup_dbg.get_text(separator=" ", strip=True)[:500]
                 print(f"[DEBUG] Sayfa metni (ilk 500 krk):\n{txt}\n")
+
+                # Hangi selector'ların eşleştiğini göster
+                for sel_name, sel in [
+                    ("article.kl-icerik-satir", "article.kl-icerik-satir"),
+                    ("div.ki-cevapicerigi", "div.ki-cevapicerigi"),
+                    ("span.msg", "span.msg"),
+                    ("aside.ki-cevapsahibi", "aside.ki-cevapsahibi"),
+                ]:
+                    try:
+                        cnt = page.locator(sel).count()
+                        print(f"[DEBUG] {sel_name} → {cnt} adet")
+                    except:
+                        print(f"[DEBUG] {sel_name} → hata")
 
             return html
 
@@ -138,37 +184,40 @@ class DonanimHaberScraper:
             return None
 
     # ──────────────────────────────────────────────
-    #  ✅ DÜZELTILMIŞ sayfalama URL'si
+    #  ✅ DH sayfalama URL'si
     # ──────────────────────────────────────────────
     def _get_page_url(self, page: int) -> str:
         """
-        DH sayfalama formatı:
+        DH sayfalama: URL sonuna -N eklenir
           Sayfa 1:  .../konu--132918743
           Sayfa 2:  .../konu--132918743-2
-          Sayfa 3:  .../konu--132918743-3
         """
         if page <= 1:
             return self.base_url
         return f"{self.base_url}-{page}"
 
     # ──────────────────────────────────────────────
-    #  Toplam sayfa sayısı
+    #  ✅ Toplam sayfa sayısı (data-maxpage)
     # ──────────────────────────────────────────────
     def _get_total_pages(self, soup: BeautifulSoup) -> int:
-        # DH'de sayfalama linkleri: <a href="...--132918743-21570">21570</a>
-        max_page = 1
+        # Yöntem 1: data-maxpage attribute (en güvenilir)
+        el = soup.find(attrs={"data-maxpage": True})
+        if el:
+            try:
+                return int(el["data-maxpage"])
+            except (ValueError, TypeError):
+                pass
 
-        # Yöntem 1: Tüm linklerde --ID-SAYFA pattern'i ara
+        # Yöntem 2: Sayfalama linklerinden --ID-SAYFA pattern'i
+        max_page = 1
         for a in soup.find_all("a", href=True):
-            href = a["href"]
-            # --132918743-21570  formatından sayfa numarasını çek
-            m = re.search(r"--\d+-(\d+)", href)
+            m = re.search(r"--\d+-(\d+)", a["href"])
             if m:
                 max_page = max(max_page, int(m.group(1)))
 
-        # Yöntem 2: "Sayfa: 1 2 3 ... 21570" metninden
+        # Yöntem 3: "Sayfa: 1 2 3 ... 21.570" metninden
         page_text = soup.get_text()
-        m = re.search(r"Sayfa.*?(\d[\d.]*)\s*$", page_text, re.M)
+        m = re.search(r"Sayfa.*?([\d.]+)\s*$", page_text, re.M)
         if m:
             try:
                 val = int(m.group(1).replace(".", ""))
@@ -179,118 +228,152 @@ class DonanimHaberScraper:
         return max_page
 
     # ──────────────────────────────────────────────
-    #  ✅ DÜZELTILMIŞ post parsing
+    #  ✅ DH'ye özel post parsing
     # ──────────────────────────────────────────────
     def _parse_posts(self, html: str, page: int) -> List[ForumPost]:
         soup = BeautifulSoup(html, "lxml")
         posts: List[ForumPost] = []
 
-        # ── DH'nin gerçek yapısına göre mesaj kutucuklarını bul ──
-        # Önce bilinen DH selector'larını dene, sonra generic'e düş
-        content_els = []
+        # ── DH'nin gerçek yapısına göre mesajları bul ──
+        # Öncelik: article.kl-icerik-satir (yeni DH)
+        articles = soup.find_all("article", class_="kl-icerik-satir")
 
-        # DH klasik mesaj yapısı
-        dh_selectors = [
-            ("div", {"class": re.compile(r"birMesaj|klasikMesaj", re.I)}),
-            ("div", {"class": re.compile(r"msgContent|mesajIcerik|mesaj-icerik", re.I)}),
-            ("div", {"id": re.compile(r"^msg_\d+")}),
-            ("div", {"class": re.compile(r"mesajSatir|mesaj_satir", re.I)}),
-            ("div", {"class": re.compile(r"postContent|post-content", re.I)}),
-            # IPS fallback (belki bazı sayfalar IPS)
-            ("div", {"data-role": "commentContent"}),
-            ("div", {"class": re.compile(r"cPost_contentWrap|ipsType_richText", re.I)}),
-        ]
-
-        for tag, attrs in dh_selectors:
-            found = soup.find_all(tag, attrs=attrs)
-            if found:
-                content_els = found
-                print(f"  [PARSE] Selector eşleşti: <{tag} {attrs}> → {len(found)} adet")
-                break
-
-        # Hiçbiri bulamadıysa, debug için sayfayı dump et
-        if not content_els:
-            print(f"  ⚠️  Sayfa {page}: Hiçbir selector eşleşmedi!")
-            print(f"  [DEBUG] Sayfadaki tüm <div> class'ları:")
-            all_divs = soup.find_all("div", class_=True)
-            seen = set()
-            for d in all_divs:
-                for c in d.get("class", []):
-                    if c not in seen:
-                        seen.add(c)
-            for c in sorted(seen):
-                print(f"    .{c}")
-
-            # Son çare: en uzun metin bloklarını bul
-            print("  [DEBUG] En uzun 3 <div> metni:")
-            divs_with_text = [(d, len(d.get_text(strip=True)))
-                              for d in all_divs if d.get_text(strip=True)]
-            divs_with_text.sort(key=lambda x: -x[1])
-            for d, length in divs_with_text[:3]:
-                print(f"    class={d.get('class')} len={length}")
-                print(f"    text={d.get_text(strip=True)[:200]}")
+        if articles:
+            print(f"  Sayfa {page}: {len(articles)} mesaj bulundu (article.kl-icerik-satir).")
+            for art in articles:
+                post = self._parse_article(art, page)
+                if post:
+                    posts.append(post)
             return posts
 
-        print(f"  Sayfa {page}: {len(content_els)} mesaj bulundu.")
+        # Fallback 1: div.ki-cevapicerigi (eski DH)
+        cevap_divs = soup.find_all("div", class_="ki-cevapicerigi")
+        if cevap_divs:
+            print(f"  Sayfa {page}: {len(cevap_divs)} mesaj bulundu (div.ki-cevapicerigi).")
+            for div in cevap_divs:
+                post = self._parse_cevap_div(div, page)
+                if post:
+                    posts.append(post)
+            return posts
 
-        for el in content_els:
-            # Alıntıları temizle
-            for quote in el.find_all(["blockquote", "div"],
-                                     class_=re.compile(r"quote|Quote|alinan|Alinan", re.I)):
-                quote.decompose()
+        # Fallback 2: span.msg (en generic)
+        msg_spans = soup.find_all("span", class_="msg")
+        if msg_spans:
+            print(f"  Sayfa {page}: {len(msg_spans)} mesaj bulundu (span.msg).")
+            for sp in msg_spans:
+                content = sp.get_text(separator=" ", strip=True)
+                content = re.sub(r"\s+", " ", content)
+                if content and len(content) > 10:
+                    posts.append(ForumPost(
+                        post_id=f"p{page}_{hash(content[:50]) % 100000}",
+                        author="", timestamp="", content=content,
+                        url=self._get_page_url(page), page=page,
+                    ))
+            return posts
 
-            content = el.get_text(separator=" ", strip=True)
-            content = re.sub(r"\s+", " ", content)
-            if not content or len(content) < 10:
-                continue
+        # Hiçbiri bulamadı → DEBUG dump
+        print(f"  ⚠️ Sayfa {page}: Hiçbir DH selector'ı eşleşmedi!")
+        print(f"  [DEBUG] Sayfadaki tüm class'lar:")
+        all_els = soup.find_all(class_=True)
+        seen = set()
+        for el in all_els:
+            for c in el.get("class", []):
+                if c not in seen:
+                    seen.add(c)
+        for c in sorted(seen):
+            print(f"    .{c}")
 
-            # ── Yazar ve post ID bul ──
-            post_id = ""
-            author = ""
-            timestamp = ""
-
-            # DH: id="msg_123456789"
-            parent = el
-            for _ in range(5):  # En fazla 5 seviye yukarı
-                pid = parent.get("id", "")
-                m = re.search(r"msg[_-]?(\d+)", pid, re.I)
-                if m:
-                    post_id = m.group(1)
-                    break
-                parent = parent.parent
-                if parent is None:
-                    break
-
-            # Yazar: DH'de genellikle <a class="nick"> veya <span class="yazar">
-            if parent:
-                author_el = parent.find(
-                    ["a", "span"],
-                    class_=re.compile(r"nick|yazar|author|username|kullanici", re.I)
-                )
-                if author_el:
-                    author = author_el.get_text(strip=True)
-
-                # Tarih
-                date_el = parent.find(
-                    ["span", "a", "time"],
-                    class_=re.compile(r"tarih|date|time|mesajTarih", re.I)
-                )
-                if date_el:
-                    timestamp = date_el.get_text(strip=True)
-
-            if not post_id:
-                post_id = f"p{page}_{hash(content[:50]) % 100000}"
-
-            posts.append(ForumPost(
-                post_id=post_id,
-                author=author,
-                timestamp=timestamp,
-                content=content,
-                url=self._get_page_url(page),
-                page=page,
-            ))
+        # En uzun metin bloklarını göster
+        print("  [DEBUG] En uzun 3 <div> metni:")
+        divs = [(d, len(d.get_text(strip=True)))
+                for d in soup.find_all("div") if d.get_text(strip=True)]
+        divs.sort(key=lambda x: -x[1])
+        for d, length in divs[:3]:
+            print(f"    class={d.get('class')} len={length}")
+            print(f"    text={d.get_text(strip=True)[:200]}")
 
         return posts
+
+    def _parse_article(self, art, page: int) -> Optional[ForumPost]:
+        """article.kl-icerik-satir içindeki bir mesajı parse et."""
+        # Mesaj içeriği: span.msg
+        msg_el = art.find("span", class_="msg")
+        if not msg_el:
+            return None
+
+        # Alıntıları temizle
+        for quote in msg_el.find_all(
+            ["blockquote", "div"],
+            class_=re.compile(r"quote|Quote|alinan|Alinan|ipsQuote", re.I)
+        ):
+            quote.decompose()
+
+        content = msg_el.get_text(separator=" ", strip=True)
+        content = re.sub(r"\s+", " ", content)
+        if not content or len(content) < 10:
+            return None
+
+        # Yazar: aside.ki-cevapsahibi > div > a > b
+        author = ""
+        author_aside = art.find("aside", class_="ki-cevapsahibi")
+        if author_aside:
+            b_el = author_aside.find("b")
+            if b_el:
+                author = b_el.get_text(strip=True)
+            else:
+                a_el = author_aside.find("a")
+                if a_el:
+                    author = a_el.get_text(strip=True)
+
+        # Tarih: span.ki-cevaptarihi > span > a > time
+        timestamp = ""
+        tarih_el = art.find("span", class_="ki-cevaptarihi")
+        if tarih_el:
+            time_el = tarih_el.find("time")
+            if time_el:
+                timestamp = time_el.get_text(strip=True)
+            else:
+                timestamp = tarih_el.get_text(strip=True)
+
+        # Post ID: article id'sinden veya data attribute'dan
+        post_id = ""
+        art_id = art.get("id", "")
+        m = re.search(r"(\d+)", art_id)
+        if m:
+            post_id = m.group(1)
+        if not post_id:
+            data_pid = art.get("data-postid", "") or art.get("data-id", "")
+            if data_pid:
+                post_id = data_pid
+        if not post_id:
+            post_id = f"p{page}_{hash(content[:50]) % 100000}"
+
+        return ForumPost(
+            post_id=post_id,
+            author=author,
+            timestamp=timestamp,
+            content=content,
+            url=self._get_page_url(page),
+            page=page,
+        )
+
+    def _parse_cevap_div(self, div, page: int) -> Optional[ForumPost]:
+        """div.ki-cevapicerigi (eski DH) parse et."""
+        content = div.get_text(separator=" ", strip=True)
+        content = re.sub(r"\s+", " ", content)
+        if not content or len(content) < 10:
+            return None
+
+        author = ""
+        author_el = div.find("span", class_="mButon info")
+        if author_el:
+            author = author_el.get_text(strip=True)
+
+        return ForumPost(
+            post_id=f"p{page}_{hash(content[:50]) % 100000}",
+            author=author, timestamp="", content=content,
+            url=self._get_page_url(page), page=page,
+        )
 
     # ──────────────────────────────────────────────
     #  Ana scrape fonksiyonu
@@ -312,7 +395,7 @@ class DonanimHaberScraper:
 
             all_posts.extend(self._parse_posts(html, 1))
 
-            # Diğer sayfalar (aynı browser ile!)
+            # Diğer sayfalar — AYNI browser ile
             for pg in range(2, pages_to_scan + 1):
                 time.sleep(self.delay)
                 url = self._get_page_url(pg)
