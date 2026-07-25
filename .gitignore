@@ -1,7 +1,3 @@
-# Veritabanı ve state dosyaları (her çalışmada değişir, repo'ya girmesin)
-data/deals.db
-data/scan_state.json
-
 # Python önbellek
 __pycache__/
 *.pyc
