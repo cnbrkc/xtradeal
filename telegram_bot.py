@@ -1,86 +1,130 @@
+"""
+Telegram bildirim botu — Tam mesaj + bayi fiyatı karşılaştırması.
+"""
+
 import requests
-from typing import List
+import time
 
 
 class TelegramNotifier:
+
     def __init__(self, bot_token: str, chat_id: str):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self.api = f"https://api.telegram.org/bot{bot_token}"
+        self.api_url = f"https://api.telegram.org/bot{bot_token}"
 
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         try:
-            r = requests.post(
-                f"{self.api}/sendMessage",
+            resp = requests.post(
+                f"{self.api_url}/sendMessage",
                 json={
                     "chat_id": self.chat_id,
                     "text": text,
-                    "parse_mode": "HTML",
+                    "parse_mode": parse_mode,
                     "disable_web_page_preview": True,
                 },
                 timeout=30,
             )
-            if r.status_code != 200:
-                print(f"[TELEGRAM] Error {r.status_code}: {r.text[:200]}")
-            return r.status_code == 200
+            if resp.status_code == 200:
+                time.sleep(1)  # rate limit
+                return True
+            else:
+                print(f"[TG] Hata {resp.status_code}: {resp.text[:200]}")
+                return False
         except Exception as e:
-            print(f"[TELEGRAM] Exception: {e}")
+            print(f"[TG] Gönderim hatası: {e}")
             return False
 
     def format_deal(self, deal: dict) -> str:
-        lines = ["🚗 <b>Yeni Araç Teklifi</b>", ""]
+        """Tek bir teklifi güzel formatla. MESAJIN TAMAMINI gösterir."""
 
-        # Araç
-        car = deal.get("car_brand") or ""
-        if deal.get("car_model"):
-            car += f" {deal['car_model']}"
-        if deal.get("year"):
-            car += f" ({deal['year']})"
-        if car:
-            lines.append(f"📋 <b>Araç:</b> {car.strip()}")
+        brand = deal.get("car_brand", "") or "?"
+        model = deal.get("car_model", "") or ""
+        price = deal.get("price", 0)
+        price_text = deal.get("price_text", "")
+        list_price = deal.get("list_price", 0)
+        list_price_text = deal.get("list_price_text", "")
+        discount_text = deal.get("discount_text", "")
+        dealer = deal.get("dealer", "")
+        year = deal.get("year", "")
+        author = deal.get("author", "")
+        timestamp = deal.get("timestamp", "")
+        content = deal.get("content", "")
+        url = deal.get("url", "")
+        confidence = deal.get("confidence", 0)
+        page = deal.get("page", 0)
 
-        # Fiyat
-        price = deal.get("price_text") or (
-            f"{deal['price']:,} TL".replace(",", ".") if deal.get("price") else None
-        )
+        # Başlık
+        title = f"🚗 {brand} {model}".strip()
+        if year:
+            title += f" ({year})"
+
+        lines = [f"<b>{title}</b>", ""]
+
+        # Fiyat bilgisi
         if price:
-            lines.append(f"💰 <b>Fiyat:</b> {price}")
+            lines.append(f"💰 <b>Teklif Fiyatı:</b> {price:,.0f} TL")
+            if price_text:
+                lines.append(f"   <i>({price_text})</i>")
+
+        # Bayi / liste fiyatı
+        if list_price:
+            lines.append(f"🏷️ <b>Bayi Liste Fiyatı:</b> {list_price:,.0f} TL")
+            if list_price_text:
+                lines.append(f"   <i>({list_price_text})</i>")
+
+        # İndirim
+        if discount_text:
+            lines.append(f"📉 <b>İndirim:</b> {discount_text}")
 
         # Bayi
-        if deal.get("dealer"):
-            lines.append(f"🏪 <b>Bayi:</b> {deal['dealer']}")
+        if dealer:
+            lines.append(f"🏢 <b>Bayi:</b> {dealer}")
 
-        # Paylaşan
-        if deal.get("author"):
-            lines.append(f"👤 <b>Paylaşan:</b> {deal['author']}")
+        # Yazar ve tarih
+        meta = []
+        if author:
+            meta.append(f"👤 {author}")
+        if timestamp:
+            meta.append(f"🕐 {timestamp}")
+        if page:
+            meta.append(f"📄 Sayfa {page}")
+        if meta:
+            lines.append("")
+            lines.append(" | ".join(meta))
+
+        # ── MESAJIN TAMAMI ──
+        lines.append("")
+        lines.append("─" * 30)
+        lines.append("📝 <b>Forum Mesajı:</b>")
+        lines.append("")
+
+        # Telegram 4096 karakter limiti var, güvenli kes
+        # Başlık kısmı ~500 karakter, mesaj için ~3400 bırak
+        max_content = 3400
+        if len(content) > max_content:
+            lines.append(content[:max_content] + "...")
+        else:
+            lines.append(content)
+
+        lines.append("")
+        lines.append("─" * 30)
+
+        # Güven skoru
+        conf_bar = "🟢" if confidence >= 0.7 else "🟡" if confidence >= 0.5 else "🔴"
+        lines.append(f"{conf_bar} Güven: %{int(confidence * 100)}")
 
         # Link
-        if deal.get("url"):
-            lines.append(f'🔗 <a href="{deal["url"]}">Konuya Git</a>')
-
-        # Güven
-        conf = int(deal.get("confidence", 0) * 100)
-        lines.append(f"📊 <b>Güven:</b> %{conf}")
-
-        # İçerik özeti
-        content = (deal.get("content") or "")[:250]
-        if content:
-            lines.append("")
-            lines.append(f"<i>{content}</i>")
+        if url:
+            lines.append(f"🔗 <a href=\"{url}\">Forum'da Gör</a>")
 
         return "\n".join(lines)
 
-    def send_deals(self, deals: List[dict]) -> int:
-        sent = 0
-        for d in deals:
-            if self.send_message(self.format_deal(d)):
-                sent += 1
-        return sent
-
-    def send_summary(self, total: int, new: int, sent: int):
-        self.send_message(
-            f"📊 <b>Tarama Tamamlandı</b>\n\n"
-            f"📝 Toplam post: {total}\n"
-            f"🆕 Yeni teklif: {new}\n"
-            f"📤 Gönderilen: {sent}"
+    def send_summary(self, total: int, new: int, sent: int) -> bool:
+        msg = (
+            f"📊 <b>Tarama Özeti</b>\n\n"
+            f"📄 Taranan post: {total}\n"
+            f"🆕 Yeni kayıt: {new}\n"
+            f"📤 Gönderilen: {sent}\n"
         )
+        return self.send_message(msg)
