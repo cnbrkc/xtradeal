@@ -235,8 +235,4 @@ class DonanimHaberScraper:
         soup = BeautifulSoup(html, "lxml")
         total_pages = self._get_total_pages(soup)
         pages_to_scan = min(num_pages, total_pages)
-        print(f"[SCRAPER] Toplam {total_pages} sayfa, {pages_to_scan} sayfa taranacak.")
-
-        all_posts.extend(self._parse_posts(html, 1))
-
-        for page in range(2, pages_to_scan
+        print(f"[
