@@ -1,12 +1,13 @@
 """
-DonanimHaber forum scraper — KALDIĞI YERDEN İLERİYE tarar.
+DonanimHaber forum scraper — Kaldığı yerden ileriye, sayfa sayfa callback.
 """
 
 import re
 import time
+import hashlib
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Callable
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
@@ -18,6 +19,12 @@ class ForumPost:
     content: str
     url: str
     page: int
+
+
+def _stable_id(content: str, page: int) -> str:
+    """Deterministik post ID — her çalışmada AYNI sonucu verir."""
+    raw = f"{page}_{content[:80]}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 
 class DonanimHaberScraper:
@@ -177,7 +184,7 @@ class DonanimHaberScraper:
                 content = re.sub(r"\s+", " ", content)
                 if content and len(content) > 10:
                     posts.append(ForumPost(
-                        post_id=f"p{page}_{hash(content[:50]) % 100000}",
+                        post_id=_stable_id(content, page),
                         author="", timestamp="", content=content,
                         url=self._get_page_url(page), page=page,
                     ))
@@ -191,7 +198,7 @@ class DonanimHaberScraper:
                 content = re.sub(r"\s+", " ", content)
                 if content and len(content) > 10:
                     posts.append(ForumPost(
-                        post_id=f"p{page}_{hash(content[:50]) % 100000}",
+                        post_id=_stable_id(content, page),
                         author="", timestamp="", content=content,
                         url=self._get_page_url(page), page=page,
                     ))
@@ -220,7 +227,7 @@ class DonanimHaberScraper:
             return None
 
         author = ""
-        aside = art.find("aside", class_="ki-cevapsahibi")
+        aside = art.find("aside", class_="ki-cevabsahibi")
         if aside:
             b = aside.find("b")
             if b:
@@ -232,14 +239,16 @@ class DonanimHaberScraper:
             t = tarih.find("time")
             timestamp = t.get_text(strip=True) if t else tarih.get_text(strip=True)
 
+        # ✅ DH'nin gerçek message ID'si (deterministik)
         post_id = ""
         m = re.search(r"(\d+)", art.get("id", ""))
         if m:
             post_id = m.group(1)
         if not post_id:
             post_id = art.get("data-postid", "") or art.get("data-id", "")
+        # ✅ Fallback: deterministik md5 (hash() DEĞİL!)
         if not post_id:
-            post_id = f"p{page}_{hash(content[:50]) % 100000}"
+            post_id = _stable_id(content, page)
 
         return ForumPost(
             post_id=post_id, author=author, timestamp=timestamp,
@@ -247,59 +256,42 @@ class DonanimHaberScraper:
         )
 
     # ──────────────────────────────────────────────
-    #  ✅ YENİ MANTIK: KALDIĞI YERDEN İLERİYE TARA
+    #  ✅ KALDIĞI YERDEN İLERİYE + SAYFA SAYFA CALLBACK
     # ──────────────────────────────────────────────
-    def scrape_latest(self, num_pages: int = 5,
-                      last_page: int = 0) -> tuple:
+    def scrape_latest(self, num_pages: int = 5, last_page: int = 0,
+                      on_page: Optional[Callable] = None) -> tuple:
         """
-        Kaldığı yerden İLERİYE doğru tarar.
+        Kaldığı yerden İLERİYE tarar.
+        Her sayfa bitince on_page(posts, page_num, total_pages) çağrılır.
 
-        İlk çalışma (last_page=0):
-            Son sayfayı bulur, son N sayfayı tarar.
-            21568 → 21569 → 21570 → 21571 → 21572
-
-        Sonraki çalışma (last_page=21572):
-            Son sayfayı kontrol eder.
-            - Hâlâ 21572 → sadece 21572'yi tara (yeni postlar)
-            - 21573 olmuş → 21572 → 21573 tara (ileri)
-            - 21575 olmuş → 21572 → 21573 → 21574 → 21575 tara
-
-        Returns:
-            (posts, new_last_page, total_pages, last_post_id)
+        Returns: (all_posts, total_pages, last_post_id)
         """
         all_posts: List[ForumPost] = []
         total_pages = 0
 
         try:
-            # ── 1) Son sayfayı aç, total_pages'i öğren ──
+            # 1) Son sayfayı öğren
             print("[SCRAPER] Son sayfa kontrol ediliyor...")
-            # Önce 1. sayfayı açarak total_pages'i bul
             html = self._fetch_page_html(self.base_url, page_num=1)
             if not html:
                 print("[SCRAPER] İlk sayfa yüklenemedi!")
-                return all_posts, last_page, 0, ""
+                return all_posts, 0, ""
 
             soup = BeautifulSoup(html, "lxml")
             total_pages = self._get_total_pages(soup)
             print(f"[SCRAPER] Toplam sayfa: {total_pages}")
 
-            # ── 2) Başlangıç sayfasını belirle ──
+            # 2) Başlangıç
             if last_page <= 0:
-                # İLK ÇALIŞMA: son N sayfadan başla
                 start = max(1, total_pages - num_pages + 1)
                 print(f"[SCRAPER] İlk çalışma. "
                       f"Sayfa {start} → {total_pages} taranacak.")
             else:
-                # SONRAKİ ÇALIŞMA: kaldığın yerden başla
-                start = last_page
-                # Eğer konu küçülmüşse (nadir)
-                if start > total_pages:
-                    start = total_pages
+                start = min(last_page, total_pages)
                 print(f"[SCRAPER] Kaldığın yerden devam. "
                       f"Sayfa {start} → {total_pages} taranacak.")
 
-            # ── 3) İLERİ DOĞRU tara ──
-            pages_scanned = 0
+            # 3) İLERİ DOĞRU tara, her sayfada callback
             for pg in range(start, total_pages + 1):
                 url = self._get_page_url(pg)
                 print(f"\n  📄 Sayfa {pg}/{total_pages}: {url}")
@@ -307,21 +299,20 @@ class DonanimHaberScraper:
                 if html:
                     posts = self._parse_posts(html, pg)
                     all_posts.extend(posts)
-                    pages_scanned += 1
 
                     if posts:
                         print(f"     → {len(posts)} post | "
                               f"ilk: {posts[0].post_id} | "
                               f"son: {posts[-1].post_id}")
+
+                    # ✅ Her sayfa bitince HEMEN işle (gönderim vs.)
+                    if on_page and posts:
+                        on_page(posts, pg, total_pages)
+
                 time.sleep(self.delay)
 
-            # ── 4) Son post ID'yi belirle ──
-            last_post_id = ""
-            if all_posts:
-                last_post_id = all_posts[-1].post_id
-
+            last_post_id = all_posts[-1].post_id if all_posts else ""
             print(f"\n[SCRAPER] Tarama bitti: "
-                  f"{pages_scanned} sayfa, "
                   f"{len(all_posts)} post, "
                   f"son sayfa: {total_pages}, "
                   f"son post: {last_post_id}")
@@ -329,9 +320,9 @@ class DonanimHaberScraper:
         finally:
             self._close_browser()
 
-        return all_posts, total_pages, total_pages, last_post_id
+        return all_posts, total_pages, last_post_id
 
     # Geriye uyumluluk
     def scrape(self, num_pages: int = 5) -> List[ForumPost]:
-        posts, _, _, _ = self.scrape_latest(num_pages)
+        posts, _, _ = self.scrape_latest(num_pages)
         return posts
