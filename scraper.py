@@ -235,4 +235,4 @@ class DonanimHaberScraper:
         soup = BeautifulSoup(html, "lxml")
         total_pages = self._get_total_pages(soup)
         pages_to_scan = min(num_pages, total_pages)
-        print(f"[
+            print(f"[SCRAPER] Sayfa {page} yükleniyor: {url}")
