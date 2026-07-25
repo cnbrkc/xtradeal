@@ -29,33 +29,29 @@ class DonanimHaberScraper:
 
     def _login(self, page):
         if not self.dh_username or not self.dh_password:
-            print("[SCRAPER] DH kullanıcı adı/şifre bulunamadı, giriş yapılamadı!")
+            print("[SCRAPER] DH kullanıcı adı/şifre yok, giriş yapılamadı!")
             return False
             
         print("[SCRAPER] Forum'a giriş yapılıyor...")
         try:
             page.goto("https://forum.donanimhaber.com/login/", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(8000) # Cloudflare geçerse diye bekle
+            page.wait_for_timeout(8000)
             
-            # Şifre kutusunu bul (En garantisi input[type='password']")
             print("[SCRAPER] Giriş kutucukları aranıyor...")
             page.wait_for_selector("input[type='password']", timeout=15000)
             
-            # Şifreyi doldur
             page.locator("input[type='password']").first.fill(self.dh_password)
             
-            # Kullanıcı adını doldur (Şifre kutusundan önceki metin kutusu)
             username_selectors = ["input[name='auth']", "input[name='username']", "input[type='email']", "input[type='text']"]
             for sel in username_selectors:
                 try:
                     if page.locator(sel).first.is_visible():
                         page.locator(sel).first.fill(self.dh_username)
-                        print(f"[SCRAPER] Kullanıcı adı '{sel}' kutusuna yazıldı.")
+                        print("Kullanıcı adı yazıldı.")
                         break
                 except:
                     continue
             
-            # "Giriş Yap" butonuna tıkla (Tipi submit olan veya id'si elSignInSubmit olan)
             print("[SCRAPER] Giriş yap butonuna tıklanıyor...")
             submit_selectors = ["#elSignInSubmit", "button[type='submit']", "input[type='submit']"]
             for sel in submit_selectors:
@@ -66,7 +62,6 @@ class DonanimHaberScraper:
                 except:
                     continue
             
-            # Girişin tamamlanması için bekle
             page.wait_for_timeout(8000)
             print("[SCRAPER] Giriş işlemi tamamlandı.")
             return True
@@ -74,7 +69,6 @@ class DonanimHaberScraper:
             print(f"[SCRAPER] Giriş hatası: {e}")
             try:
                 page.screenshot(path="login_error.png", full_page=True)
-                print("[SCRAPER] Giriş hata ekran görüntüsü 'login_error.png' olarak kaydedildi.")
             except:
                 pass
             return False
@@ -84,7 +78,6 @@ class DonanimHaberScraper:
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(user_agent=self.user_agent)
             
-            # Cloudflare kandırmacası
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 window.chrome = { runtime: {} };
@@ -95,26 +88,23 @@ class DonanimHaberScraper:
             page = context.new_page()
             
             try:
-                # Sayfaya git
                 page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 page.wait_for_timeout(8000)
                 
                 title = page.title()
-                print(f"[SCRAPER] Açılan Sayfa Başlığı: {title}")
+                print(f"Sayfa Basligi: {title}")
 
-                # Post elementinin yüklenmesini bekle
                 try:
                     page.wait_for_selector("article[id^='elComment_'], div[data-postid]", timeout=15000)
                     html = page.content()
                     return html
                 except PlaywrightTimeoutError:
-                    print("[SCRAPER] Postlar bulunamadı. Muhtemelen üye girişi gerekiyor.")
+                    print("[SCRAPER] Postlar bulunamadi. Giris gerekebilir.")
                     
-                    # Eğer ilk sayfadaysak ve giriş bilgileri varsa, giriş yapmayı dene
                     if page_num == 1 and self.dh_username and self.dh_password:
                         logged_in = self._login(page)
                         if logged_in:
-                            print("[SCRAPER] Giriş yapıldı, konuya tekrar dönülüyor...")
+                            print("[SCRAPER] Giris yapildi, konuya tekrar donuluyor...")
                             page.goto(url, timeout=60000, wait_until="domcontentloaded")
                             page.wait_for_timeout(5000)
                             try:
@@ -124,12 +114,11 @@ class DonanimHaberScraper:
                             except PlaywrightTimeoutError:
                                 pass
                     
-                    # Hala bulunamadıysa ekran görüntüsü al
                     page.screenshot(path="debug.png", full_page=True)
-                    print("[SCRAPER] Hata ekran görüntüsü 'debug.png' olarak kaydedildi.")
+                    print("[SCRAPER] Ekran goruntusu kaydedildi.")
                     return page.content()
             except Exception as e:
-                print(f"[SCRAPER] Fetch error {url}: {e}")
+                print(f"[SCRAPER] Fetch error: {e}")
                 return None
             finally:
                 browser.close()
@@ -169,7 +158,7 @@ class DonanimHaberScraper:
             articles = soup.find_all("div", class_=re.compile(r"cPost|ipsComment"))
 
         if not articles:
-            print(f"[SCRAPER] Sayfa {page}: post bulunamadı!")
+            print(f"Sayfa {page}: post bulunamadi!")
             return posts
 
         for article in articles:
@@ -229,10 +218,23 @@ class DonanimHaberScraper:
 
         html = self._fetch_page_html(self.base_url, page_num=1)
         if not html:
-            print("[SCRAPER] İlk sayfa yüklenemedi!")
+            print("[SCRAPER] Ilk sayfa yuklenemedi!")
             return all_posts
 
         soup = BeautifulSoup(html, "lxml")
         total_pages = self._get_total_pages(soup)
         pages_to_scan = min(num_pages, total_pages)
-            print(f"[SCRAPER] Sayfa {page} yükleniyor: {url}")
+        print(f"Toplam {total_pages} sayfa, {pages_to_scan} sayfa taranacak.")
+
+        all_posts.extend(self._parse_posts(html, 1))
+
+        for page in range(2, pages_to_scan + 1):
+            time.sleep(self.delay)
+            url = self._get_page_url(page)
+            print(f"Sayfa {page} yukleniyor: {url}")
+            html = self._fetch_page_html(url, page_num=page)
+            if html:
+                all_posts.extend(self._parse_posts(html, page))
+
+        print(f"Toplam {len(all_posts)} post bulundu.")
+        return all_posts
