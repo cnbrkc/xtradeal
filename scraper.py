@@ -170,4 +170,168 @@ class DonanimHaberScraper:
             return posts
 
         cevap_divs = soup.find_all("div", class_="ki-cevapicerigi")
-       
+        if cevap_divs:
+            print(f"  Sayfa {page}: {len(cevap_divs)} mesaj (eski DH).")
+            for div in cevap_divs:
+                content = div.get_text(separator=" ", strip=True)
+                content = re.sub(r"\s+", " ", content)
+                if content and len(content) > 10:
+                    posts.append(ForumPost(
+                        post_id=f"p{page}_{hash(content[:50]) % 100000}",
+                        author="", timestamp="", content=content,
+                        url=self._get_page_url(page), page=page,
+                    ))
+            return posts
+
+        msg_spans = soup.find_all("span", class_="msg")
+        if msg_spans:
+            print(f"  Sayfa {page}: {len(msg_spans)} mesaj (span.msg).")
+            for sp in msg_spans:
+                content = sp.get_text(separator=" ", strip=True)
+                content = re.sub(r"\s+", " ", content)
+                if content and len(content) > 10:
+                    posts.append(ForumPost(
+                        post_id=f"p{page}_{hash(content[:50]) % 100000}",
+                        author="", timestamp="", content=content,
+                        url=self._get_page_url(page), page=page,
+                    ))
+            return posts
+
+        print(f"  ⚠️ Sayfa {page}: Selector eşleşmedi!")
+        seen = set()
+        for el in soup.find_all(class_=True):
+            for c in el.get("class", []):
+                seen.add(c)
+        print(f"  [DEBUG] Class'lar: {sorted(seen)[:30]}")
+        return posts
+
+    def _parse_article(self, art, page: int) -> Optional[ForumPost]:
+        msg_el = art.find("span", class_="msg")
+        if not msg_el:
+            return None
+        for quote in msg_el.find_all(
+            ["blockquote", "div"],
+            class_=re.compile(r"quote|Quote|alinan|Alinan", re.I)
+        ):
+            quote.decompose()
+        content = msg_el.get_text(separator=" ", strip=True)
+        content = re.sub(r"\s+", " ", content)
+        if not content or len(content) < 10:
+            return None
+
+        author = ""
+        aside = art.find("aside", class_="ki-cevapsahibi")
+        if aside:
+            b = aside.find("b")
+            if b:
+                author = b.get_text(strip=True)
+
+        timestamp = ""
+        tarih = art.find("span", class_="ki-cevaptarihi")
+        if tarih:
+            t = tarih.find("time")
+            timestamp = t.get_text(strip=True) if t else tarih.get_text(strip=True)
+
+        post_id = ""
+        m = re.search(r"(\d+)", art.get("id", ""))
+        if m:
+            post_id = m.group(1)
+        if not post_id:
+            post_id = art.get("data-postid", "") or art.get("data-id", "")
+        if not post_id:
+            post_id = f"p{page}_{hash(content[:50]) % 100000}"
+
+        return ForumPost(
+            post_id=post_id, author=author, timestamp=timestamp,
+            content=content, url=self._get_page_url(page), page=page,
+        )
+
+    # ──────────────────────────────────────────────
+    #  ✅ YENİ MANTIK: KALDIĞI YERDEN İLERİYE TARA
+    # ──────────────────────────────────────────────
+    def scrape_latest(self, num_pages: int = 5,
+                      last_page: int = 0) -> tuple:
+        """
+        Kaldığı yerden İLERİYE doğru tarar.
+
+        İlk çalışma (last_page=0):
+            Son sayfayı bulur, son N sayfayı tarar.
+            21568 → 21569 → 21570 → 21571 → 21572
+
+        Sonraki çalışma (last_page=21572):
+            Son sayfayı kontrol eder.
+            - Hâlâ 21572 → sadece 21572'yi tara (yeni postlar)
+            - 21573 olmuş → 21572 → 21573 tara (ileri)
+            - 21575 olmuş → 21572 → 21573 → 21574 → 21575 tara
+
+        Returns:
+            (posts, new_last_page, total_pages, last_post_id)
+        """
+        all_posts: List[ForumPost] = []
+        total_pages = 0
+
+        try:
+            # ── 1) Son sayfayı aç, total_pages'i öğren ──
+            print("[SCRAPER] Son sayfa kontrol ediliyor...")
+            # Önce 1. sayfayı açarak total_pages'i bul
+            html = self._fetch_page_html(self.base_url, page_num=1)
+            if not html:
+                print("[SCRAPER] İlk sayfa yüklenemedi!")
+                return all_posts, last_page, 0, ""
+
+            soup = BeautifulSoup(html, "lxml")
+            total_pages = self._get_total_pages(soup)
+            print(f"[SCRAPER] Toplam sayfa: {total_pages}")
+
+            # ── 2) Başlangıç sayfasını belirle ──
+            if last_page <= 0:
+                # İLK ÇALIŞMA: son N sayfadan başla
+                start = max(1, total_pages - num_pages + 1)
+                print(f"[SCRAPER] İlk çalışma. "
+                      f"Sayfa {start} → {total_pages} taranacak.")
+            else:
+                # SONRAKİ ÇALIŞMA: kaldığın yerden başla
+                start = last_page
+                # Eğer konu küçülmüşse (nadir)
+                if start > total_pages:
+                    start = total_pages
+                print(f"[SCRAPER] Kaldığın yerden devam. "
+                      f"Sayfa {start} → {total_pages} taranacak.")
+
+            # ── 3) İLERİ DOĞRU tara ──
+            pages_scanned = 0
+            for pg in range(start, total_pages + 1):
+                url = self._get_page_url(pg)
+                print(f"\n  📄 Sayfa {pg}/{total_pages}: {url}")
+                html = self._fetch_page_html(url, page_num=pg)
+                if html:
+                    posts = self._parse_posts(html, pg)
+                    all_posts.extend(posts)
+                    pages_scanned += 1
+
+                    if posts:
+                        print(f"     → {len(posts)} post | "
+                              f"ilk: {posts[0].post_id} | "
+                              f"son: {posts[-1].post_id}")
+                time.sleep(self.delay)
+
+            # ── 4) Son post ID'yi belirle ──
+            last_post_id = ""
+            if all_posts:
+                last_post_id = all_posts[-1].post_id
+
+            print(f"\n[SCRAPER] Tarama bitti: "
+                  f"{pages_scanned} sayfa, "
+                  f"{len(all_posts)} post, "
+                  f"son sayfa: {total_pages}, "
+                  f"son post: {last_post_id}")
+
+        finally:
+            self._close_browser()
+
+        return all_posts, total_pages, total_pages, last_post_id
+
+    # Geriye uyumluluk
+    def scrape(self, num_pages: int = 5) -> List[ForumPost]:
+        posts, _, _, _ = self.scrape_latest(num_pages)
+        return posts
