@@ -1,9 +1,10 @@
 """
-Ana giriş noktası — Kaldığı yerden ileriye tarama.
+Ana giriş noktası — Sayfa sayfa tara, buldukça HEMEN gönder.
 """
 
 import sys
 import json
+from dataclasses import asdict
 
 from config import Config
 from scraper import DonanimHaberScraper
@@ -27,7 +28,7 @@ def run_scan(config: Config, send_telegram: bool = True,
     if state.last_page > 0:
         print(f"\n[STATE] Kaldığım yer: sayfa {state.last_page}, "
               f"son post: {state.last_post_id}, "
-              f"şimdiye kadar {state.scan_count} tarama yapılmış.")
+              f"{state.scan_count}. tarama.")
     else:
         print(f"\n[STATE] İlk çalışma, son sayfadan başlayacağım.")
 
@@ -41,71 +42,102 @@ def run_scan(config: Config, send_telegram: bool = True,
     )
     db = Database(config.DB_PATH)
 
-    # ── 1) Forumu tara (KALDIĞI YERDEN İLERİYE) ──
-    print(f"\n[1/4] Forum taranıyor...")
-    posts, new_last_page, total_pages, last_post_id = scraper.scrape_latest(
-        num_pages=config.SCAN_PAGES,
-        last_page=state.last_page,
-    )
-    print(f"      → {len(posts)} post bulundu.")
-
-    if not posts:
-        print("      ⚠️ Post bulunamadı!")
-        state_mgr.update(
-            last_page=new_last_page or state.last_page,
-            last_post_id=state.last_post_id,
-            total_pages=total_pages,
-        )
-        return {"total_posts": 0, "potential_deals": 0,
-                "new_deals": 0, "sent": 0}
-
-    # ── 2) Araç bilgisi çıkar (SIKI FİLTRE) ──
-    print(f"\n[2/4] Araç bilgileri çıkarılıyor...")
-    deals = []
-    for post in posts:
-        deal = extract_deal(post)
-        if deal.confidence >= config.MIN_CONFIDENCE:
-            deals.append(deal)
-        elif debug:
-            print(f"      [ELENEN] conf={deal.confidence} "
-                  f"brand={deal.car_brand} price={deal.price} "
-                  f"→ {post.content[:80]}...")
-    print(f"      → {len(deals)} teklif bulundu "
-          f"({len(posts) - len(deals)} gürültü elendi).")
-
-    # ── 3) Veritabanına kaydet ──
-    print(f"\n[3/4] Veritabanına kaydediliyor...")
-    new_count = 0
-    for deal in deals:
-        if db.save_deal(deal):
-            new_count += 1
-    print(f"      → {new_count} yeni kayıt "
-          f"({len(deals) - new_count} duplicate atlandı).")
-
-    # ── 4) Telegram'a gönder ──
-    sent_count = 0
+    notifier = None
     if send_telegram and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
-        print(f"\n[4/4] Telegram'a gönderiliyor...")
         notifier = TelegramNotifier(
             config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID
         )
-        unsent = db.get_unsent_deals(min_confidence=config.MIN_CONFIDENCE)
-        print(f"      → {len(unsent)} gönderilecek teklif.")
 
-        for deal_dict in unsent:
-            msg = notifier.format_deal(deal_dict)
-            if notifier.send_message(msg):
-                db.mark_sent(deal_dict["post_id"])
-                sent_count += 1
+    # ── Sayaçlar ──
+    counters = {
+        "total_posts": 0,
+        "deals_found": 0,
+        "new_deals": 0,
+        "sent": 0,
+        "noise": 0,
+    }
 
+    # ──────────────────────────────────────────────
+    #  ✅ HER SAYFA BİTİNCE ÇAĞRILAN FONKSİYON
+    #  Tara → Çıkar → Kaydet → HEMEN Gönder
+    # ──────────────────────────────────────────────
+    def handle_page(posts, page_num, total_pages):
+        counters["total_posts"] += len(posts)
+
+        for post in posts:
+            deal = extract_deal(post)
+
+            # Gürültü filtresi
+            if deal.confidence < config.MIN_CONFIDENCE:
+                counters["noise"] += 1
+                if debug:
+                    print(f"     [ELENEN] conf={deal.confidence} "
+                          f"→ {post.content[:60]}...")
+                continue
+
+            counters["deals_found"] += 1
+
+            # DB'ye kaydet (duplicate ise False döner)
+            is_new = db.save_deal(deal)
+            if not is_new:
+                continue
+
+            counters["new_deals"] += 1
+            print(f"     🆕 YENİ: {deal.car_brand} {deal.car_model} "
+                  f"| {deal.price_text or deal.price} "
+                  f"| conf={deal.confidence}")
+
+            # ✅ HEMEN Telegram'a gönder (tarih sıralı)
+            if notifier:
+                msg = notifier.format_deal(asdict(deal))
+                if notifier.send_message(msg):
+                    db.mark_sent(deal.post_id)
+                    counters["sent"] += 1
+
+    # ── 1-3) Tara + Çıkar + Gönder (hepsi bir arada) ──
+    print(f"\n[1/3] Forum taranıyor, buldukça gönderilecek...")
+    posts, total_pages, last_post_id = scraper.scrape_latest(
+        num_pages=config.SCAN_PAGES,
+        last_page=state.last_page,
+        on_page=handle_page,
+    )
+
+    # ── 4) Özet ──
+    print(f"\n[2/3] Özet çıkarılıyor...")
+    print(f"      Toplam post:    {counters['total_posts']}")
+    print(f"      Teklif bulundu: {counters['deals_found']}")
+    print(f"      Yeni kayıt:     {counters['new_deals']}")
+    print(f"      Gürültü elendi: {counters['noise']}")
+    print(f"      Gönderilen:     {counters['sent']}")
+
+    # ── Yeni bir şey yoksa bildir ──
+    if notifier and counters["new_deals"] == 0:
+        print(f"\n[3/3] Yeni teklif yok, bildiriliyor...")
+        if total_pages > state.last_page:
+            # Yeni sayfa var ama teklif yok
+            notifier.send_message(
+                f"📭 <b>Yeni teklif yok</b>\n\n"
+                f"Sayfa {state.last_page} → {total_pages} tarandı, "
+                f"{counters['total_posts']} post incelendi.\n"
+                f"Yeni araç teklifi bulunamadı."
+            )
+        else:
+            # Yeni sayfa da yok
+            notifier.send_message(
+                f"📭 <b>Yeni teklif yok</b>\n\n"
+                f"Sayfa {total_pages} tarandı, "
+                f"{counters['total_posts']} post incelendi.\n"
+                f"Yeni sayfa eklenmemiş, yeni teklif yok."
+            )
+    elif notifier and counters["sent"] > 0:
         notifier.send_summary(
-            total=len(posts), new=new_count, sent=sent_count
+            total=counters["total_posts"],
+            new=counters["new_deals"],
+            sent=counters["sent"],
         )
-        print(f"      → {sent_count} mesaj gönderildi.")
-    else:
-        print(f"\n[4/4] Telegram atlandı.")
 
     # ── State'i kaydet ──
+    new_last_page = total_pages if total_pages > 0 else state.last_page
     state_mgr.update(
         last_page=new_last_page,
         last_post_id=last_post_id,
@@ -115,15 +147,15 @@ def run_scan(config: Config, send_telegram: bool = True,
           f"son sayfa: {new_last_page}/{total_pages}, "
           f"son post: {last_post_id}")
 
-    # ── Özet ──
+    # ── Sonuç ──
     result = {
-        "total_posts": len(posts),
-        "potential_deals": len(deals),
-        "new_deals": new_count,
-        "sent": sent_count,
+        "total_posts": counters["total_posts"],
+        "potential_deals": counters["deals_found"],
+        "new_deals": counters["new_deals"],
+        "sent": counters["sent"],
+        "noise_filtered": counters["noise"],
         "last_page": new_last_page,
         "total_pages": total_pages,
-        "last_post_id": last_post_id,
     }
     print(f"\n{'=' * 60}")
     print(f"  TAMAMLANDI: {json.dumps(result, ensure_ascii=False)}")
