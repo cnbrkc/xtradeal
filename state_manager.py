@@ -1,5 +1,5 @@
 """
-Tarama durumunu (state) JSON dosyasında saklar.
+Tarama durumunu JSON dosyasında saklar.
 Her çalışmada kaldığı yerden devam eder.
 """
 
